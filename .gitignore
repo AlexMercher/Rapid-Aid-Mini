@@ -1,0 +1,18 @@
+# Ignore everything by default
+*
+
+# Do not ignore directories, so Git can traverse them to find Python files
+!*/
+
+# Ignore virtual environments
+venv/
+.venv/
+
+# Do not ignore the .gitignore file itself so it gets pushed
+!.gitignore
+
+# Do not ignore requirements.txt
+!requirements.txt
+
+# Only allow Python files
+!*.py

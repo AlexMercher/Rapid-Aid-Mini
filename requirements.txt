@@ -1,0 +1,17 @@
+# Core Dependencies
+requests>=2.31.0          # HTTP client for Ollama API
+Pillow>=10.0.0            # Image processing
+reportlab>=4.0.0          # PDF generation
+python-dateutil>=2.8.0    # Date/time handling
+
+# Optional - for better logging
+python-dotenv>=1.0.0      # Environment variable management
+
+# Groq Cloud API (Stage 2 - text JSON extraction)
+groq>=0.9.0               # Groq cloud LLM SDK
+
+# Streamlit UI
+streamlit>=1.30.0         # Web application framework
+
+# Testing
+pytest>=7.0.0             # Test framework
