@@ -54,7 +54,7 @@ class PipelineManager:
         """Lazy-load RapidAid processor."""
         if self._rapidaid is None:
             from pipeline.track_processor import TrackCentricProcessor
-            self._rapidaid = TrackCentricProcessor(use_nano=True)
+            self._rapidaid = TrackCentricProcessor(use_nano=False)  # Phase 1: use settings.VEHICLE_MODEL (yolo11s)
         return self._rapidaid
 
     def process_video(self, video_path, save_clips=True):

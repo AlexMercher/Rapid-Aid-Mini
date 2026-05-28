@@ -17,8 +17,10 @@ REPORTS_DIR = os.path.join(OUTPUTS_DIR, "reports")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
 # Model weight files
-VEHICLE_MODEL = os.path.join(WEIGHTS_DIR, "yolov8s-seg.pt")
-POSE_MODEL = os.path.join(WEIGHTS_DIR, "yolov8s-pose.pt")
+# Upgraded from yolov8s (Phase 1 — 2026-05-19)
+# YOLO11s: higher mAP than YOLOv8s, fewer params, faster CPU inference
+VEHICLE_MODEL = os.path.join(WEIGHTS_DIR, "yolo11s-seg.pt")
+POSE_MODEL = os.path.join(WEIGHTS_DIR, "yolo11s-pose.pt")
 ACCIDENT_CLASSIFIER_MODEL = os.path.join(WEIGHTS_DIR, "accident_classifier.pt")
 DAMAGE_CLASSIFIER_MODEL = os.path.join(WEIGHTS_DIR, "damage_classifier.pt")
 TEMPORAL_CLASSIFIER_MODEL = os.path.join(WEIGHTS_DIR, "temporal_classifier.pt")
