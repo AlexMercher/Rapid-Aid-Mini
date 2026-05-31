@@ -39,6 +39,38 @@ from models.causal_gate import CausalGate, AccidentState
 from models.camera_stabilizer import CameraStabilizer
 
 
+# ============================================================
+# Phase 2 — Portrait geometry helpers
+# ============================================================
+
+def is_portrait_frame(frame_w: int, frame_h: int) -> bool:
+    """
+    Returns True if frame is portrait orientation (h strictly > w).
+    Square frames (h == w) return False — treated as landscape.
+    """
+    return frame_h > frame_w
+
+
+def portrait_swap_bboxes(bboxes: list, frame_w: int, frame_h: int) -> tuple:
+    """
+    Swap x/y axis in bboxes for portrait geometry computation.
+
+    In portrait video, vehicles are arranged along the y-axis (depth along road).
+    Swapping axes exposes the correct overlap direction to the geometry IoU module,
+    which is calibrated to detect horizontal (x-axis) vehicle proximity.
+
+    Transform: (x1, y1, x2, y2) → (y1, x1, y2, x2)
+    Dims swap:  frame_w ↔ frame_h (portrait dims become effective landscape dims)
+
+    Returns:
+        swapped_bboxes: list of (y1, x1, y2, x2) tuples
+        swapped_w:      frame_h (new effective width)
+        swapped_h:      frame_w (new effective height)
+    """
+    swapped = [(y1, x1, y2, x2) for (x1, y1, x2, y2) in bboxes]
+    return swapped, frame_h, frame_w  # swap dims too
+
+
 class TrackCentricProcessor:
     """
     Track-centric accident detection processor.
@@ -304,7 +336,7 @@ class TrackCentricProcessor:
 
             # Feature 2: Geometry warmup — suppress geometry in early frames
             raw_geometry = self._compute_geometry_score(
-                active_vehicle_tracks, collision_zones
+                active_vehicle_tracks, collision_zones, frame_w, frame_h
             )
             if analyzed_count <= 5:
                 geo_warmup = 0.2 + 0.16 * analyzed_count  # 0.36..1.0
@@ -757,21 +789,40 @@ class TrackCentricProcessor:
 
         return False
 
-    def _compute_geometry_score(self, tracks, collision_zones):
+    def _compute_geometry_score(self, tracks, collision_zones,
+                                frame_w=None, frame_h=None):
         """Compute geometry score from track overlaps and collision zones."""
         score = 0.0
 
-        # M4 collision zones
+        # M4 collision zones (independent of portrait orientation)
         if collision_zones:
             score = max(score, collision_zones[0]["confidence"])
 
-        # Track-to-track proximity
+        # Track-to-track proximity via bbox IoU
         if len(tracks) >= 2:
-            for i in range(len(tracks)):
-                for j in range(i + 1, len(tracks)):
-                    t1 = tracks[i]
-                    t2 = tracks[j]
-                    iou = self._compute_iou(t1.bbox, t2.bbox)
+            # --- Portrait geometry axis swap (Phase 2) ---
+            # For portrait frames (h > w), swap x/y in bboxes so that
+            # the y-axis vehicle distribution (along road depth) is treated
+            # as x-axis (horizontal proximity), which the IoU module expects.
+            if (frame_w is not None and frame_h is not None
+                    and settings.PORTRAIT_GEOMETRY_ENABLED
+                    and is_portrait_frame(frame_w, frame_h)):
+                raw_bboxes = [
+                    (t.bbox[0], t.bbox[1], t.bbox[2], t.bbox[3])
+                    for t in tracks
+                ]
+                effective_bboxes, _, _ = portrait_swap_bboxes(
+                    raw_bboxes, frame_w, frame_h
+                )
+            else:
+                effective_bboxes = [t.bbox for t in tracks]
+            # ---------------------------------------------
+
+            for i in range(len(effective_bboxes)):
+                for j in range(i + 1, len(effective_bboxes)):
+                    iou = self._compute_iou(
+                        effective_bboxes[i], effective_bboxes[j]
+                    )
                     if iou > 0.1:
                         score = max(score, iou * 0.8)
 

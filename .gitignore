@@ -8,6 +8,8 @@
 venv/
 .venv/
 
+tmp/
+
 # Do not ignore the .gitignore file itself so it gets pushed
 !.gitignore
 

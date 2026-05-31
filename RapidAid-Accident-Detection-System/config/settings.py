@@ -181,6 +181,16 @@ CLASSIFIER_SMOOTHING_WINDOW = 5        # Frames for rolling average
 POST_CRASH_LOOKAHEAD_SEC = 20.0
 
 # ============================================================
+# PORTRAIT GEOMETRY (Phase 2)
+# ============================================================
+# Portrait = camera upright, h > w (Type B — do NOT rotate frames).
+# Fix: swap x/y axis assumptions in geometry IoU calculation only.
+# YOLO, ByteTrack, optical flow all continue to receive original portrait frames.
+# Set False to disable for debugging (reverts to Phase 1 geometry behaviour).
+PORTRAIT_GEOMETRY_ENABLED = True
+
+
+# ============================================================
 # ORCHESTRATION / EVENT ANCHORING
 # ============================================================
 # Re-anchor clips and event states when confirmation happens much earlier
