@@ -560,7 +560,11 @@ class TrackCentricProcessor:
         report_data["per_frame_summary"] = [
             {k: v for k, v in d.items()
              if k in ("frame_idx", "timestamp_sec", "final_confidence",
-                      "n_vehicle_tracks", "processing_ms")}
+                      "n_vehicle_tracks", "processing_ms",
+                      # Phase 3: signal scores for LR training data
+                      "detector_score", "tracking_score", "velocity_score",
+                      "optical_flow_score", "disappearance_score",
+                      "geometry_score")}
             for d in per_frame_data
         ]
         with open(report_path, "w") as f:

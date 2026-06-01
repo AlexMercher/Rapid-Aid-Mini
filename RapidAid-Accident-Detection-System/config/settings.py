@@ -191,6 +191,22 @@ PORTRAIT_GEOMETRY_ENABLED = True
 
 
 # ============================================================
+# CONFIDENCE FUSION MODE (Phase 3)
+# ============================================================
+# Controls which fusion algorithm ConfidenceFusion.compute() uses.
+#   "weighted" — existing hand-tuned weighted average (stable fallback)
+#   "learned"  — logistic regression trained on GT-labeled per-frame signals
+#                Captures co-occurrence patterns (geometry AND velocity
+#                simultaneously) that weighted sums cannot express.
+# Switch back to "weighted" instantly if learned model regresses.
+FUSION_MODE = "learned"
+
+# Path to the trained LR bundle (model + scaler), relative to working dir.
+# build_training_data.py and train_fusion_lr.py both write to this path.
+FUSION_MODEL_PATH = "RapidAid-Accident-Detection-System/weights/fusion_lr_model.pkl"
+
+
+# ============================================================
 # ORCHESTRATION / EVENT ANCHORING
 # ============================================================
 # Re-anchor clips and event states when confirmation happens much earlier
