@@ -42,7 +42,8 @@ class CausalGate:
                  suspicious_threshold=0.30,
                  confirm_threshold=0.45,
                  confirm_frames_required=3,
-                 aftermath_duration_frames=15):
+                 aftermath_duration_frames=15,
+                 aftermath_timeout_frames=50):
         self.causal_vel_threshold = causal_vel_threshold
         self.causal_flow_threshold = causal_flow_threshold
         self.causal_dis_threshold = causal_dis_threshold
@@ -51,6 +52,9 @@ class CausalGate:
         self.confirm_threshold = confirm_threshold
         self.confirm_frames_required = confirm_frames_required
         self.aftermath_duration_frames = aftermath_duration_frames
+        # Phase 4: frames from first-confirmed before AFTERMATH resets to CLEAR
+        # Allows multi-event re-detection (e.g. V1 bus-pass + real collision)
+        self.aftermath_timeout_frames = aftermath_timeout_frames
 
         # State machine
         self.state = AccidentState.CLEAR
@@ -154,6 +158,16 @@ class CausalGate:
             if frame_idx - self.confirmed_frame > self.aftermath_duration_frames:
                 self.state = AccidentState.AFTERMATH
                 flags.append("ENTERED_AFTERMATH")
+
+        elif self.state == AccidentState.AFTERMATH:
+            # Phase 4: multi-event support — allow re-detection after extended aftermath.
+            # Time-based only (not confidence-based) so it fires even if LR stays elevated.
+            # aftermath_timeout_frames counts from the original confirmed_frame.
+            if (self.confirmed_frame is not None
+                    and frame_idx - self.confirmed_frame > self.aftermath_timeout_frames):
+                self.state = AccidentState.CLEAR
+                self.suspicious_count = 0
+                flags.append("AFTERMATH_RESET_FOR_REDETECTION")
 
         # 8. Non-causal confirmation detection
         non_causal_flag = False

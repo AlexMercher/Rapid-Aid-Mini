@@ -29,6 +29,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from dataclasses import dataclass, field
+from typing import Optional
+
 from config import settings
 from models.tracker import TrackManager
 from models.velocity_analyzer import VelocityAnalyzer
@@ -40,8 +43,97 @@ from models.camera_stabilizer import CameraStabilizer
 
 
 # ============================================================
-# Phase 2 — Portrait geometry helpers
+# Phase 4 — Multi-Event Candidate Collection
 # ============================================================
+
+@dataclass
+class CandidateEvent:
+    """
+    A distinct CONFIRMED accident event candidate.
+    Collected during video processing, scored at end.
+    Highest-scoring candidate is selected as the primary event.
+    """
+    first_confirmed_time:  float           # timestamp when CONFIRMED first fired
+    first_confirmed_frame: int             # analyzed frame index
+    peak_confidence:       float = 0.0     # highest confidence seen in this event
+    peak_confidence_time:  float = 0.0     # timestamp of peak confidence
+    peak_frame_signals:    dict  = field(default_factory=dict)  # signals at peak
+    duration_frames:       int   = 0       # frames spent in CONFIRMED for this event
+    end_time:              float = 0.0     # when this event ended (CONFIRMED dropped)
+    candidate_score:       float = 0.0     # composite score computed after collection
+    co_occurrence_score:   float = 0.0     # geometry+velocity co-occurrence
+    selected:              bool  = False   # True for the chosen best candidate
+
+
+def score_candidate_event(candidate: 'CandidateEvent',
+                          frame_h: int,
+                          frame_w: int) -> float:
+    """
+    Score a candidate event for selection as primary event.
+    Higher score = more likely to be a genuine accident.
+
+    Uses co-occurrence: geometry AND velocity co-occurring
+    simultaneously is stronger evidence than peak amplitude alone.
+    This distinguishes real crashes (geo+vel both spike) from
+    false positives like V1's bus-pass (high geo, LOW vel).
+    """
+    signals = candidate.peak_frame_signals
+
+    def get_sig(key: str) -> float:
+        return float(signals.get(key)
+                     or signals.get("%s_score" % key)
+                     or 0.0)
+
+    geo = get_sig('geometry')
+    vel = get_sig('velocity')
+    dis = get_sig('disappearance')
+
+    HIGH     = 0.30  # threshold for geo and vel
+    DIS_HIGH = 0.50  # higher bar for disappearance (must be anomalous, not ambient)
+
+    # Co-occurrence counts THREE crash-specific signals:
+    #   geo  — vehicles are geometrically close / overlapping
+    #   vel  — sudden velocity anomaly (hard stop, debris scatter)
+    #   dis  — anomalous track disappearance (crash removes vehicles from scene)
+    #
+    # Intentionally excludes tracking and optical_flow:
+    #   tracking is always active (many vehicles present)
+    #   optical_flow responds to any large motion (e.g. bus passing = false positive)
+    strong = sum([
+        geo > HIGH,       # vehicles close together
+        vel > HIGH,       # kinetic energy anomaly
+        dis > DIS_HIGH,   # track vanishes after impact
+    ])
+
+    if strong >= 3:
+        co_occurrence = 1.0
+    elif strong == 2:
+        co_occurrence = 0.65
+    elif strong == 1:
+        co_occurrence = 0.20
+    else:
+        co_occurrence = 0.0
+
+    # Primary crash signature: geometry+velocity co-occur
+    # Bus-pass: high geo, LOW vel (vel=0.13) -> no boost
+    # Real crash: high geo AND high vel -> boost
+    if geo > HIGH and vel > HIGH:
+        co_occurrence = min(1.0, co_occurrence + 0.20)
+
+    candidate.co_occurrence_score = co_occurrence
+
+    # Duration: normalize to [0,1] saturating at 10 CONFIRMED frames
+    duration_score = min(1.0, candidate.duration_frames / 10.0)
+
+    # Final score: peak confidence (40%), duration (20%), co-occurrence (40%)
+    score = (
+        candidate.peak_confidence * 0.40
+        + duration_score          * 0.20
+        + co_occurrence           * 0.40
+    )
+    candidate.candidate_score = score
+    return score
+
 
 def is_portrait_frame(frame_w: int, frame_h: int) -> bool:
     """
@@ -154,6 +246,7 @@ class TrackCentricProcessor:
             suspicious_threshold=0.30,
             confirm_frames_required=3,
             min_evidence_families=2,
+            aftermath_timeout_frames=settings.AFTERMATH_TIMEOUT_FRAMES,
         )
 
         # Feature 5: Camera shake suppression
@@ -205,6 +298,11 @@ class TrackCentricProcessor:
         self.flow_analyzer.reset()
         self.disappearance_analyzer.update_frame_size(frame_w, frame_h)
         self.causal_gate.reset()
+
+        # Phase 4: multi-event candidate state (reset per video for batch safety)
+        _candidate_events: list = []                   # closed, scored candidates
+        _active_candidate: Optional[CandidateEvent] = None  # currently open candidate
+        _confirmed_gap_frames: int = 0                 # consecutive non-CONFIRMED frames
 
         # Feature 11: FPS-aware time delta
         delta_t = frame_interval / fps  # seconds between analyzed frames
@@ -391,26 +489,67 @@ class TrackCentricProcessor:
                 gate_signals, analyzed_count
             )
 
-            # Only confirm when causal gate transitions to CONFIRMED
-            if (gate_result["state"] == AccidentState.CONFIRMED
-                    and not accident_confirmed):
-                accident_confirmed = True
-                accident_frame_idx = analyzed_count
-                accident_timestamp = t_sec
-                first_confirmed_frame_idx = analyzed_count
-                first_confirmed_timestamp = t_sec
-                best_confidence = final_conf
-                best_frame = frame.copy()
-                best_frame_data = fusion_result
-                print(f"  [{t_sec}s] *** ACCIDENT CONFIRMED *** "
-                      f"(confidence={final_conf:.3f}) "
-                      f"reason: {gate_result.get('confirmation_reason','N/A')}")
+            # Only confirm when causal gate fires CONFIRMED (now multi-event capable)
+            current_state = gate_result["state"]
+            gate_flags    = gate_result.get("flags", [])
 
-            if accident_confirmed and final_conf > best_confidence:
-                best_confidence = final_conf
-                best_frame = frame.copy()
-                best_frame_data = fusion_result
-                accident_timestamp = t_sec
+            # Phase 4: if aftermath expired, reset EMA for clean re-detection
+            if "AFTERMATH_RESET_FOR_REDETECTION" in gate_flags:
+                smoothed_confidence = 0.0
+                print("  [%.2fs] [MULTI-EVENT] Aftermath expired "
+                      "-- resetting EMA for re-detection" % t_sec)
+
+            if current_state == AccidentState.CONFIRMED:
+                _confirmed_gap_frames = 0
+
+                if _active_candidate is None:
+                    # New candidate: CONFIRMED just entered (fresh or after gap reset)
+                    _active_candidate = CandidateEvent(
+                        first_confirmed_time=t_sec,
+                        first_confirmed_frame=analyzed_count,
+                    )
+                    # Preserve legacy first-confirmed fields for the FIRST candidate only
+                    if not accident_confirmed:
+                        accident_confirmed      = True
+                        accident_frame_idx      = analyzed_count
+                        accident_timestamp      = t_sec
+                        first_confirmed_frame_idx   = analyzed_count
+                        first_confirmed_timestamp   = t_sec
+                    print("  [%.2fs] *** CANDIDATE CONFIRMED *** "
+                          "(confidence=%.3f) "
+                          "reason: %s" % (
+                              t_sec, final_conf,
+                              gate_result.get('confirmation_reason', 'N/A')))
+
+                # Update active candidate each CONFIRMED frame
+                _active_candidate.duration_frames += 1
+                _active_candidate.end_time = t_sec
+
+                if final_conf > _active_candidate.peak_confidence:
+                    _active_candidate.peak_confidence      = final_conf
+                    _active_candidate.peak_confidence_time = t_sec
+                    _active_candidate.peak_frame_signals   = {
+                        "detector":      detector_score,
+                        "tracking":      tracking_score,
+                        "velocity":      velocity_score,
+                        "optical_flow":  optical_flow_score,
+                        "disappearance": disappearance_score,
+                        "geometry":      geometry_score,
+                    }
+                    best_frame      = frame.copy()
+                    best_frame_data = fusion_result
+
+            else:
+                # Not CONFIRMED: count gap and close candidate if threshold reached
+                if _active_candidate is not None:
+                    _confirmed_gap_frames += 1
+                    if _confirmed_gap_frames >= settings.CANDIDATE_GAP_THRESHOLD:
+                        _candidate_events.append(_active_candidate)
+                        _active_candidate = None
+                        _confirmed_gap_frames = 0
+                        print("  [%.2fs] [MULTI-EVENT] Candidate closed "
+                              "-- watching for next event" % t_sec)
+
 
             # Timing
             dt = time.perf_counter() - t0
@@ -490,9 +629,43 @@ class TrackCentricProcessor:
         cap.release()
         if out_writer:
             out_writer.release()
-            print(f"\n  Tracked video saved: {out_path}")
+            print("\n  Tracked video saved: %s" % out_path)
         if show_overlay:
             cv2.destroyAllWindows()
+
+        # ===== PHASE 4: CLOSE + SCORE ALL CANDIDATES =====
+        # Close any still-active candidate at video end
+        if _active_candidate is not None:
+            _candidate_events.append(_active_candidate)
+            _active_candidate = None
+
+        # Score every candidate and select the best
+        if _candidate_events:
+            for c in _candidate_events:
+                score_candidate_event(c, frame_h, frame_w)
+
+            best_candidate = max(_candidate_events,
+                                 key=lambda c: c.candidate_score)
+            best_candidate.selected = True
+
+            # Map selected candidate back to output fields
+            accident_confirmed = True
+            accident_timestamp = best_candidate.peak_confidence_time
+            best_confidence    = best_candidate.peak_confidence
+            # best_frame is already the frame with peak confidence
+
+            print("\n  [MULTI-EVENT] %d candidate(s) found. "
+                  "Selected: t=%.2fs (score=%.3f)" % (
+                      len(_candidate_events),
+                      best_candidate.first_confirmed_time,
+                      best_candidate.candidate_score))
+            for i, c in enumerate(_candidate_events):
+                sel = "<-- SELECTED" if c.selected else ""
+                print("    Candidate %d: t=%.2fs peak_conf=%.3f "
+                      "dur=%d co_occ=%.3f score=%.3f %s" % (
+                          i, c.first_confirmed_time, c.peak_confidence,
+                          c.duration_frames, c.co_occurrence_score,
+                          c.candidate_score, sel))
 
         # ===== FINAL RESULTS =====
         avg_fps = 1.0 / np.mean(frame_times) if frame_times else 0
@@ -506,6 +679,26 @@ class TrackCentricProcessor:
             "duration_sec": round(total_frames / fps, 2) if fps else None,
             "best_confidence": round(best_confidence, 3),
             "best_fusion_result": best_frame_data,
+            # Phase 4: multi-event candidate fields
+            "n_candidate_events": len(_candidate_events),
+            "selected_event_index": next(
+                (i for i, c in enumerate(_candidate_events) if c.selected), 0
+            ),
+            "candidate_events": [
+                {
+                    "first_confirmed_time":  c.first_confirmed_time,
+                    "peak_confidence":       round(c.peak_confidence, 3),
+                    "peak_confidence_time":  c.peak_confidence_time,
+                    "duration_frames":       c.duration_frames,
+                    "co_occurrence_score":   round(c.co_occurrence_score, 3),
+                    "candidate_score":       round(c.candidate_score, 3),
+                    "peak_frame_signals":    {
+                        k: round(v, 3) for k, v in c.peak_frame_signals.items()
+                    },
+                    "selected":              c.selected,
+                }
+                for c in _candidate_events
+            ],
             "metrics": {
                 "total_frames": total_frames,
                 "frames_analyzed": analyzed_count,

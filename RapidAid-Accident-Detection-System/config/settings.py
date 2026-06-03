@@ -207,6 +207,20 @@ FUSION_MODEL_PATH = "RapidAid-Accident-Detection-System/weights/fusion_lr_model.
 
 
 # ============================================================
+# MULTI-EVENT CANDIDATE DETECTION (Phase 4)
+# ============================================================
+# Consecutive non-CONFIRMED frames before closing an active candidate.
+# Small gaps (e.g. 1-2 frame state dip) keep the candidate open.
+CANDIDATE_GAP_THRESHOLD = 5
+
+# Frames from first-confirmed before AFTERMATH resets to CLEAR.
+# Enables re-detection of a second distinct event (e.g. V1 bus-pass + real crash).
+# 50 frames ≈ 16.7s at 3fps. Must be > aftermath_duration_frames (15).
+AFTERMATH_TIMEOUT_FRAMES = 50
+
+
+
+# ============================================================
 # ORCHESTRATION / EVENT ANCHORING
 # ============================================================
 # Re-anchor clips and event states when confirmation happens much earlier
