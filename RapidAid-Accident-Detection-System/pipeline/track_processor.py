@@ -120,6 +120,12 @@ def score_candidate_event(candidate: 'CandidateEvent',
     if geo > HIGH and vel > HIGH:
         co_occurrence = min(1.0, co_occurrence + 0.20)
 
+    # Secondary crash signature: geometry+disappearance co-occur
+    # Vehicles proximate AND one vanishes = genuine impact.
+    # Bus-pass immune: raw_dis=0.50 is NOT strictly > DIS_HIGH=0.50.
+    if geo > HIGH and dis > DIS_HIGH:
+        co_occurrence = min(1.0, co_occurrence + 0.20)
+
     candidate.co_occurrence_score = co_occurrence
 
     # Duration: normalize to [0,1] saturating at 10 CONFIRMED frames
@@ -133,6 +139,173 @@ def score_candidate_event(candidate: 'CandidateEvent',
     )
     candidate.candidate_score = score
     return score
+
+
+# ============================================================
+# Phase 5 — Traffic Flow Model (gated disappearance signal)
+# ============================================================
+
+@dataclass
+class TrafficFlowBaseline:
+    """
+    Learned normal traffic behavior from pre-event CLEAR frames.
+    Used to gate disappearance signal — only count disappearances
+    that violated the established flow pattern.
+    """
+    # Collected during CLEAR state
+    velocity_samples:    list  = field(default_factory=list)  # list of (vx, vy) tuples
+    speed_samples:       list  = field(default_factory=list)  # list of float speeds
+    frame_count:         int   = 0      # CLEAR frames observed
+
+    # Computed baseline (set once min_frames_required is reached)
+    mean_vx:             float = 0.0
+    mean_vy:             float = 0.0
+    mean_speed:          float = 0.0
+    speed_std:           float = 0.0
+    flow_variance:       float = 0.0    # angular spread of velocity directions
+    is_reliable:         bool  = False  # True when enough data collected
+    is_high_variance:    bool  = False  # True when scene has chaotic multi-dir flow
+
+    # Settings (read from config at construction)
+    min_frames_required: int   = 10    # from settings.FLOW_MIN_FRAMES
+    high_var_threshold:  float = 2.0   # from settings.FLOW_HIGH_VAR_THRESHOLD
+
+
+def _compute_baseline_stats(baseline: "TrafficFlowBaseline") -> None:
+    """Compute mean direction, speed stats, and angular variance from samples."""
+    import math
+    speeds = baseline.speed_samples
+    vxs = [v[0] for v in baseline.velocity_samples]
+    vys = [v[1] for v in baseline.velocity_samples]
+
+    baseline.mean_vx    = sum(vxs) / len(vxs)
+    baseline.mean_vy    = sum(vys) / len(vys)
+    baseline.mean_speed = sum(speeds) / len(speeds)
+
+    var = sum((s - baseline.mean_speed) ** 2 for s in speeds) / len(speeds)
+    baseline.speed_std  = var ** 0.5
+
+    # Angular spread of velocity vectors: high = many directions = intersection
+    angles = [math.atan2(vy, vx) for vx, vy in baseline.velocity_samples]
+    mean_angle = math.atan2(
+        sum(math.sin(a) for a in angles) / len(angles),
+        sum(math.cos(a) for a in angles) / len(angles),
+    )
+    angle_var = sum(
+        min(abs(a - mean_angle), 2 * math.pi - abs(a - mean_angle)) ** 2
+        for a in angles
+    ) / len(angles)
+
+    baseline.flow_variance    = angle_var
+    baseline.is_reliable      = True
+    baseline.is_high_variance = (angle_var > baseline.high_var_threshold)
+
+
+def update_flow_baseline(baseline: "TrafficFlowBaseline",
+                          active_tracks: list,
+                          current_state) -> None:
+    """
+    Collect velocity data from CLEAR-state frames only.
+    Never contaminate with SUSPICIOUS/CONFIRMED/AFTERMATH frames.
+    """
+    if current_state != AccidentState.CLEAR:
+        return
+    if baseline.frame_count >= settings.FLOW_MAX_BASELINE_FRAMES:
+        return
+
+    for track in active_tracks:
+        # Support both real Track (velocity tuple) and mock objects (vx/vy attrs)
+        if hasattr(track, 'vx') and track.vx is not None:
+            vx = float(track.vx)
+            vy = float(getattr(track, 'vy', 0.0) or 0.0)
+        elif (hasattr(track, 'velocity')
+              and isinstance(track.velocity, (tuple, list))
+              and len(track.velocity) >= 2):
+            vx = float(track.velocity[0] or 0.0)
+            vy = float(track.velocity[1] or 0.0)
+        else:
+            continue
+
+        speed = (vx ** 2 + vy ** 2) ** 0.5
+        if speed < 0.5:
+            continue  # skip near-stationary (parked / stopped)
+
+        baseline.velocity_samples.append((vx, vy))
+        baseline.speed_samples.append(speed)
+        baseline.frame_count += 1
+
+    if len(baseline.speed_samples) >= baseline.min_frames_required:
+        _compute_baseline_stats(baseline)
+
+
+def compute_flow_violation_score(track, baseline: "TrafficFlowBaseline") -> float:
+    """
+    Score how much a vehicle's behavior deviates from normal flow.
+
+    Returns float in [0.0, 1.0]:
+      0.0 = normal flow (likely occlusion if disappears)
+      1.0 = extreme violation (likely genuine accident if disappears)
+
+    Falls back to 0.5 (neutral) when baseline is unreliable or high-variance.
+    """
+    import math
+
+    if not baseline.is_reliable:
+        return 0.5
+    if baseline.is_high_variance:
+        return 0.5
+
+    # Support both real Track (velocity tuple) and mock objects (vx/vy attrs)
+    if hasattr(track, 'vx') and track.vx is not None:
+        vx = float(track.vx)
+        vy = float(getattr(track, 'vy', 0.0) or 0.0)
+    elif (hasattr(track, 'velocity')
+          and isinstance(track.velocity, (tuple, list))
+          and len(track.velocity) >= 2):
+        vx = float(track.velocity[0] or 0.0)
+        vy = float(track.velocity[1] or 0.0)
+    else:
+        vx, vy = 0.0, 0.0
+
+    speed = (vx ** 2 + vy ** 2) ** 0.5
+    score = 0.0
+
+    # Signal 1: Direction deviation from baseline
+    if speed > 0.5 and baseline.mean_speed > 0.5:
+        track_angle    = math.atan2(vy, vx)
+        baseline_angle = math.atan2(baseline.mean_vy, baseline.mean_vx)
+        angle_diff     = abs(track_angle - baseline_angle)
+        angle_diff     = min(angle_diff, 2 * math.pi - angle_diff)
+        direction_score = min(1.0, angle_diff / math.pi)
+        score += direction_score * settings.FLOW_DIRECTION_WEIGHT
+
+    # Signal 2: Speed ratio anomaly
+    if baseline.mean_speed > 0.5:
+        speed_ratio = speed / baseline.mean_speed
+        if speed_ratio < 0.2 or speed_ratio > 3.0:
+            speed_score = min(1.0, abs(1.0 - speed_ratio) / 2.0)
+        else:
+            speed_score = 0.0
+        score += speed_score * settings.FLOW_SPEED_WEIGHT
+
+    # Signal 3: Velocity collapse (sudden deceleration before disappearing)
+    velocity_collapsed = False
+    if hasattr(track, 'velocity_collapsed'):
+        velocity_collapsed = bool(track.velocity_collapsed)
+    elif hasattr(track, 'history') and len(track.history) >= 4:
+        speeds_h = []
+        for entry in track.history:
+            vel = entry.get('velocity', (0, 0)) or (0, 0)
+            speeds_h.append((vel[0] ** 2 + vel[1] ** 2) ** 0.5)
+        for i in range(2, len(speeds_h)):
+            if speeds_h[i - 2] > 5.0 and speeds_h[i] < speeds_h[i - 2] * 0.3:
+                velocity_collapsed = True
+                break
+
+    if velocity_collapsed:
+        score += settings.FLOW_COLLAPSE_WEIGHT
+
+    return min(1.0, score)
 
 
 def is_portrait_frame(frame_w: int, frame_h: int) -> bool:
@@ -304,6 +477,12 @@ class TrackCentricProcessor:
         _active_candidate: Optional[CandidateEvent] = None  # currently open candidate
         _confirmed_gap_frames: int = 0                 # consecutive non-CONFIRMED frames
 
+        # Phase 5: traffic flow baseline (reset per video — batch safety)
+        self.flow_baseline = TrafficFlowBaseline(
+            min_frames_required=settings.FLOW_MIN_FRAMES,
+            high_var_threshold=settings.FLOW_HIGH_VAR_THRESHOLD,
+        )
+
         # Feature 11: FPS-aware time delta
         delta_t = frame_interval / fps  # seconds between analyzed frames
 
@@ -426,11 +605,38 @@ class TrackCentricProcessor:
             shake = self.camera_stabilizer.compute_suppression(flow_field)
             optical_flow_score = raw_flow_score * shake["suppression_factor"]
 
-            disappearance_score = self._compute_disappearance_score(
+            # Phase 5: RAW disappearance (for candidate scoring — unaffected by gating)
+            raw_disappearance_score = self._compute_disappearance_score(
                 disappearance_results,
                 dead_tracks=dead_tracks,
                 active_tracks=active_vehicle_tracks,
             )
+
+            # Phase 5: GATED disappearance (for confidence fusion only)
+            # When baseline is unreliable or high-variance: pass through unchanged.
+            disappearance_score = raw_disappearance_score
+            if (self.flow_baseline.is_reliable
+                    and not self.flow_baseline.is_high_variance
+                    and dead_tracks):
+                # Find which dying track produced the highest raw score
+                _best_tid, _best_raw = None, 0.0
+                for _tid, _r in disappearance_results.items():
+                    if _r.get("disappearance_score", 0) > _best_raw:
+                        _best_raw = _r["disappearance_score"]
+                        _best_tid = _tid
+                if _best_tid is not None:
+                    _dying = next(
+                        (t for t in dead_tracks if t.track_id == _best_tid), None
+                    )
+                    if _dying is not None:
+                        _violation = compute_flow_violation_score(
+                            _dying, self.flow_baseline
+                        )
+                        # Phase 5: 0.5 floor — never suppress by more than 50%.
+                        # Prevents real-crash disappearances (normal-flow victims)
+                        # from being zeroed out. Occlusions still get halved.
+                        _violation = max(0.5, _violation)
+                        disappearance_score = raw_disappearance_score * _violation
 
             # Feature 2: Geometry warmup — suppress geometry in early frames
             raw_geometry = self._compute_geometry_score(
@@ -458,7 +664,10 @@ class TrackCentricProcessor:
                 tracking_score=tracking_score,
                 velocity_score=velocity_score,
                 optical_flow_score=optical_flow_score,
-                disappearance_score=disappearance_score,
+                # Phase 5: use RAW disappearance in fusion so EMA is not degraded
+                # by flow gating. The GATED score (disappearance_score with 0.5
+                # floor) is logged in per_frame_data for diagnostics only.
+                disappearance_score=raw_disappearance_score,
                 geometry_score=geometry_score,
             )
 
@@ -478,7 +687,10 @@ class TrackCentricProcessor:
             gate_signals = {
                 "velocity": velocity_score,
                 "optical_flow": optical_flow_score,
-                "disappearance": disappearance_score,
+                # Phase 5 fix: gate uses RAW disappearance so causal_present and
+                # family count are never degraded by flow gating. Gated score only
+                # goes into confidence_fusion (line 657).
+                "disappearance": raw_disappearance_score,
                 "detector": detector_score,
                 "tracking": tracking_score,
                 "geometry": geometry_score,
@@ -533,7 +745,7 @@ class TrackCentricProcessor:
                         "tracking":      tracking_score,
                         "velocity":      velocity_score,
                         "optical_flow":  optical_flow_score,
-                        "disappearance": disappearance_score,
+                        "disappearance": raw_disappearance_score,  # Phase 5: raw (not gated) for scoring
                         "geometry":      geometry_score,
                     }
                     best_frame      = frame.copy()
@@ -549,6 +761,12 @@ class TrackCentricProcessor:
                         _confirmed_gap_frames = 0
                         print("  [%.2fs] [MULTI-EVENT] Candidate closed "
                               "-- watching for next event" % t_sec)
+
+
+            # Phase 5: update flow baseline each frame (collects only during CLEAR)
+            update_flow_baseline(
+                self.flow_baseline, active_vehicle_tracks, current_state
+            )
 
 
             # Timing

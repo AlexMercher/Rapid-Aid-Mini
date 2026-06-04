@@ -219,6 +219,26 @@ CANDIDATE_GAP_THRESHOLD = 5
 AFTERMATH_TIMEOUT_FRAMES = 50
 
 
+# ============================================================
+# TRAFFIC FLOW MODEL (Phase 5)
+# ============================================================
+# Minimum CLEAR-state frames before flow baseline is trusted.
+# Short videos (e.g. V3 ~8s) may not reach this → unreliable → neutral 0.5.
+FLOW_MIN_FRAMES = 10
+
+# Maximum frames to collect in baseline (prevents memory growth in long videos).
+FLOW_MAX_BASELINE_FRAMES = 200
+
+# Flow variance threshold: above this = chaotic intersection = no gating.
+# angle variance in radians² — vehicles going many directions simultaneously.
+FLOW_HIGH_VAR_THRESHOLD = 2.0
+
+# Flow violation scoring weights (must sum to 1.0).
+FLOW_DIRECTION_WEIGHT = 0.65  # weight for direction-deviation signal (primary)
+FLOW_SPEED_WEIGHT     = 0.15  # weight for speed-ratio anomaly signal (secondary)
+FLOW_COLLAPSE_WEIGHT  = 0.20  # weight for velocity-collapse signal
+
+
 
 # ============================================================
 # ORCHESTRATION / EVENT ANCHORING
