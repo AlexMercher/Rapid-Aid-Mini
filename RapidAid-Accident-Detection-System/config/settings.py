@@ -243,8 +243,15 @@ FLOW_COLLAPSE_WEIGHT  = 0.20  # weight for velocity-collapse signal
 # ============================================================
 # ORCHESTRATION / EVENT ANCHORING
 # ============================================================
-# Re-anchor clips and event states when confirmation happens much earlier
+# Re-anchor event clip extraction when confirmation happens much earlier than event peak.
+# Note: frame_selector anchor logic (Phase 6) no longer uses this — it always uses
+# accident_timestamp_sec (= selected candidate's first_confirmed_timestamp) as anchor.
 ANCHOR_DIFF_MIN_SEC = 2.0
+
+# Phase 6: Unsupervised impact zone (replaces GT_IMPACT_WINDOWS)
+# Zone = [first_confirmed_time - PRE_SEC, first_confirmed_time + POST_SEC]
+IMPACT_ZONE_PRE_SEC  = 1.5   # seconds before first_confirmed_time
+IMPACT_ZONE_POST_SEC = 2.5   # seconds after first_confirmed_time
 
 # Temporal windows around impact for event-state selection
 PRE_IMPACT_WINDOW_START_SEC = 2.0

@@ -39,18 +39,22 @@ EVENT_STATE_FRAMES = 5         # pre_anomaly, convergence, impact, disruption, a
 SEMANTIC_FRAME_WIDTH = 768     # Resolution for bakllava input
 SEMANTIC_FRAME_HEIGHT = 432
 
-# ─── Ground Truth Impact Windows (Supervised Calibration) ──────────────────
-GT_IMPACT_WINDOWS = {
-    "Acc Video 1": (24.0, 26.0),
-    "Acc Video 2": (13.0, 14.0),
-    "Acc Video 3": (3.0, 4.0),
-    "Acc Video 4": (1.5, 2.5),
-    "Acc Video 5": (4.0, 5.0),
-    "Acc Video 6": (3.5, 5.0),
-    "Acc Video 7": (2.5, 4.0),
-    "Acc Video 8": (10.0, 12.0),
-    "Acc Video 9": (3.5, 4.5),
-}
+# ─── Ground Truth Impact Windows (Phase 3 training + calibration reference) ─
+# Kept as reference. No longer used in active code path (removed Phase 6).
+# Format: video_name → (start_seconds, end_seconds)
+# GT_IMPACT_WINDOWS = {
+#     "Acc Video 1":  (24.0, 26.0),
+#     "Acc Video 2":  (13.0, 14.0),
+#     "Acc Video 3":  (3.0,  4.0),
+#     "Acc Video 4":  (1.5,  2.5),
+#     "Acc Video 5":  (4.0,  5.0),
+#     "Acc Video 6":  (3.5,  5.0),
+#     "Acc Video 7":  (2.5,  4.0),
+#     "Acc Video 8":  (10.0, 12.0),
+#     "Acc Video 9":  (3.5,  4.5),
+# }
+# Unsupervised replacement: first_confirmed_time from Phase 4 multi-event detection
+
 
 # ─── Event Clip Config ──────────────────────────────────────────────────────
 EVENT_PRE_SECONDS = 8.0        # Seconds before event to include

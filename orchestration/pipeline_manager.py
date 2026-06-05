@@ -113,13 +113,13 @@ class PipelineManager:
 
         per_frame = ra_result.get("per_frame_data", [])
         event_time = ra_result.get("accident_timestamp_sec", 0) or 0
-        first_confirmed = ra_result.get("first_confirmed_time")
+        # Phase 6: event_time = best_candidate.first_confirmed_timestamp (Phase 4 multi-event).
+        # This IS the first_confirmed time of the selected event and the correct impact zone anchor.
+        # ra_result["first_confirmed_time"] is the GLOBAL earliest CONFIRMED across all candidates
+        # (e.g. V1: 3.33s bus-pass trigger) -- do NOT use it as anchor.
         anchor_time = event_time
-        anchor_source = "event_time"
-        if (first_confirmed is not None
-                and (event_time - first_confirmed) > settings.ANCHOR_DIFF_MIN_SEC):
-            anchor_time = first_confirmed
-            anchor_source = "first_confirmed"
+        anchor_source = "first_confirmed"  # event_time = first_confirmed of selected candidate
+
         print(f"  RapidAid: detected={ra_result.get('accident_detected')}, "
               f"conf={ra_result.get('best_confidence', 0):.3f}, "
               f"time={ra_result.get('accident_timestamp_sec')}s "

@@ -14,7 +14,6 @@ Impact frame is selected by MAXIMUM CAUSAL DISRUPTION, not max confidence.
 """
 
 from config import settings
-from shared.constants import GT_IMPACT_WINDOWS
 
 
 # Event-state role constants
@@ -77,22 +76,57 @@ def _find_index_at_or_before(timestamps, start_idx, max_time):
             return i
     return 0
 
+def get_impact_zone(frame_data, first_confirmed_time, event_time, video_name=""):
+    """
+    Determine impact zone for impact_moment frame selection.
+
+    Phase 6: fully unsupervised -- no hardcoded GT window lookup.
+    Uses first_confirmed_time from Phase 4 multi-event detection.
+    Falls back to event_time when first_confirmed_time is None.
+
+    Args:
+        frame_data:           list of dicts with 'timestamp' (or 'timestamp_sec') key
+        first_confirmed_time: first CONFIRMED gate firing (Phase 4 CausalGate)
+        event_time:           accident_timestamp from RapidAid (peak confidence time)
+        video_name:           ignored -- kept for API compatibility, no GT lookup
+
+    Returns:
+        (impact_zone, source)
+            impact_zone -- filtered list of frames within the zone
+            source      -- 'first_confirmed' | 'event_time' (+ optional _expanded/_fallback)
+    """
+    if first_confirmed_time is not None:
+        anchor = first_confirmed_time
+        source = "first_confirmed"
+    else:
+        anchor = event_time
+        source = "event_time"
+
+    zone_start = anchor - settings.IMPACT_ZONE_PRE_SEC
+    zone_end   = anchor + settings.IMPACT_ZONE_POST_SEC
+
+    def _ts(f):
+        return f.get('timestamp', f.get('timestamp_sec', 0))
+
+    impact_zone = [f for f in frame_data if zone_start <= _ts(f) <= zone_end]
+
+    if not impact_zone:
+        # Expand window +-1.0s and retry
+        expanded = [f for f in frame_data
+                    if (zone_start - 1.0) <= _ts(f) <= (zone_end + 1.0)]
+        if expanded:
+            impact_zone = expanded
+            source = source + "_expanded"
+        else:
+            # Last resort: frame closest to anchor
+            impact_zone = [min(frame_data, key=lambda f: abs(_ts(f) - anchor))]
+            source = source + "_fallback"
+
+    return impact_zone, source
+
 
 class FrameSelector:
     """Selects optimal event-state frames using causal disruption signals."""
-
-    @staticmethod
-    def _normalize_video_name(video_name):
-        if not video_name:
-            return ""
-        return str(video_name).strip().lower()
-
-    def _get_gt_window(self, video_name):
-        key = self._normalize_video_name(video_name)
-        for name, window in GT_IMPACT_WINDOWS.items():
-            if self._normalize_video_name(name) == key:
-                return window
-        return None
 
     def select_storyboard_frames(
         self,
@@ -179,23 +213,25 @@ class FrameSelector:
         }
 
     def _select_indices(self, per_frame_data, anchor_time, anchor_source, video_name):
+        """
+        Phase 6: No GT lookup. Always use anchor from first_confirmed_time
+        (or event_time as fallback) with asymmetric IMPACT_ZONE window.
+        """
         disruption_scores = [_causal_disruption_score(fd) for fd in per_frame_data]
         timestamps = [fd.get("timestamp_sec", i) for i, fd in enumerate(per_frame_data)]
-        gt_window = self._get_gt_window(video_name)
-        if gt_window:
-            impact_window = gt_window
-            impact_zone_source = "gt_supervised"
-        else:
-            impact_window = None
+
+        if anchor_time is not None:
+            impact_window = (
+                anchor_time - settings.IMPACT_ZONE_PRE_SEC,
+                anchor_time + settings.IMPACT_ZONE_POST_SEC,
+            )
             impact_zone_source = anchor_source if anchor_source in {
                 "first_confirmed",
                 "event_time",
             } else "event_time"
-            if anchor_time is not None:
-                impact_window = (
-                    anchor_time - settings.IMPACT_FALLBACK_HALF_SEC,
-                    anchor_time + settings.IMPACT_FALLBACK_HALF_SEC,
-                )
+        else:
+            impact_window = None
+            impact_zone_source = "event_time"
 
         impact_idx = self._find_impact_index(
             per_frame_data,
@@ -210,9 +246,9 @@ class FrameSelector:
             anchor_time,
             timestamps,
             impact_window,
-            gt_window,
         )
         return indices, impact_idx, disruption_scores, impact_zone_source
+
 
     def _enforce_min_separation(self, indices, timestamps):
         min_sec = settings.MIN_STATE_SEP_SEC
@@ -249,9 +285,11 @@ class FrameSelector:
         anchor_time,
         timestamps,
         impact_window,
-        gt_window,
     ):
-        """Select indices using non-overlapping temporal zones."""
+        """
+        Phase 6: Select indices using non-overlapping temporal zones.
+        No GT branch -- always uses anchor_time with Phase 6 window settings.
+        """
         n = len(per_frame_data)
         if not timestamps:
             return self._deduplicate_indices([0, 0, 0, 0, 0], n)
@@ -259,37 +297,23 @@ class FrameSelector:
         if anchor_time is None:
             anchor_time = timestamps[impact_idx]
 
-        if gt_window:
-            gt_start, gt_end = gt_window
-            impact_start, impact_end = gt_start, gt_end
-            pre_upper = gt_start - settings.GT_PRE_BUFFER_SEC
-            pre_candidates = [
-                i for i, t in enumerate(timestamps)
-                if t < pre_upper
-            ]
-            if not pre_candidates:
-                pre_candidates = [i for i, t in enumerate(timestamps) if t < gt_start]
-
-            post_start = gt_end + settings.POST_IMPACT_WINDOW_START_SEC
-            post_end = gt_end + settings.POST_IMPACT_WINDOW_END_SEC
+        if impact_window:
+            impact_start, impact_end = impact_window
         else:
-            if impact_window:
-                impact_start, impact_end = impact_window
-            else:
-                impact_start = anchor_time - settings.IMPACT_WINDOW_HALF_SEC
-                impact_end = anchor_time + settings.IMPACT_WINDOW_HALF_SEC
+            impact_start = anchor_time - settings.IMPACT_WINDOW_HALF_SEC
+            impact_end   = anchor_time + settings.IMPACT_WINDOW_HALF_SEC
 
-            pre_start = anchor_time - settings.PRE_IMPACT_WINDOW_START_SEC
-            pre_end = anchor_time - settings.PRE_IMPACT_WINDOW_END_SEC
-            post_start = anchor_time + settings.POST_IMPACT_WINDOW_START_SEC
-            post_end = anchor_time + settings.POST_IMPACT_WINDOW_END_SEC
+        pre_start = anchor_time - settings.PRE_IMPACT_WINDOW_START_SEC
+        pre_end   = anchor_time - settings.PRE_IMPACT_WINDOW_END_SEC
+        post_start = anchor_time + settings.POST_IMPACT_WINDOW_START_SEC
+        post_end   = anchor_time + settings.POST_IMPACT_WINDOW_END_SEC
 
-            pre_candidates = [
-                i for i, t in enumerate(timestamps)
-                if pre_start <= t <= pre_end
-            ]
-            if not pre_candidates:
-                pre_candidates = [i for i, t in enumerate(timestamps) if t < impact_start]
+        pre_candidates = [
+            i for i, t in enumerate(timestamps)
+            if pre_start <= t <= pre_end
+        ]
+        if not pre_candidates:
+            pre_candidates = [i for i, t in enumerate(timestamps) if t < impact_start]
 
         if pre_candidates:
             pre_anomaly = min(pre_candidates, key=lambda i: disruption_scores[i])
@@ -332,6 +356,7 @@ class FrameSelector:
             print("  [WARN] Frame selection compressed; enforcing minimum separation")
 
         return self._deduplicate_indices(adjusted, n)
+
 
     def _find_impact_index(
         self,
