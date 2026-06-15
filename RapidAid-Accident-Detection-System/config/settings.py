@@ -274,6 +274,11 @@ BAKLLAVA_SHORT_SIDE_PX = 512
 BAKLLAVA_MAX_LONG_SIDE_PX = 1024
 BAKLLAVA_MIN_NARRATION_CHARS = 25
 BAKLLAVA_FALLBACK_MIN_CHARS = 10
+BAKLLAVA_MASK_TIMESTAMP = True        # Mask CCTV timestamp overlay before encoding frame
+BAKLLAVA_TIMESTAMP_X_START_RATIO = 0.60  # Top-right mask: starts at 60% of frame width
+BAKLLAVA_TIMESTAMP_Y_END_RATIO   = 0.08  # Top-right mask: covers top 8% of frame height
+BAKLLAVA_CAM_LABEL_Y_START_RATIO = 0.92  # Bottom-left mask: starts at 92% of frame height
+BAKLLAVA_CAM_LABEL_X_END_RATIO   = 0.25  # Bottom-left mask: covers leftmost 25% of frame width
 
 # ============================================================
 # ENSEMBLE FUSION WEIGHTS

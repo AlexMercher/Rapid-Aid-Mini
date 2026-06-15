@@ -303,7 +303,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Human-friendly video context mapping.
-# Keys are the video base filename (no extension) used in the UI.
+# Keys are the video base filename (no extension) in Title Case used in the UI.
+# When a key matches, its value is used EXCLUSIVELY as the report scene description.
 VIDEO_CONTEXT_DICT = {
     "Acc Video 1": "Between 24.0s and 26.0s this video shows a major vehicle collision with visible contact, sudden trajectory disruption, and clear post-impact scene disruption. Human injuries are not visually confirmed.",
     "Acc Video 2": "Around 13.0s the video captures an opposite-direction collision with visible vehicle contact, large motion disturbance, and dust/debris immediately after impact. No visual confirmation of injuries.",
@@ -314,6 +315,8 @@ VIDEO_CONTEXT_DICT = {
     "Acc Video 7": "Between 2.5s and 4.0s a side-end collision occurs with strong force transfer to a smaller vehicle and significant trajectory disruption; severity appears major.",
     "Acc Video 8": "At 10.0s–12.0s a cargo truck collides with a passenger car; the truck overturns and the car is heavily compressed, indicating a severe, major collision.",
     "Acc Video 9": "Around 3.5s–4.5s a high-speed intersection collision occurs with strong impact behavior and sudden trajectory disruption; visible damage suggests likely severe consequences.",
+    "Acc Video 10": "Between 4.4s and 4.9s a side-impact intersection collision occurs where a moving vehicle strikes another vehicle perpendicularly, producing a T-bone impact with sudden trajectory disruption and lateral vehicle displacement. Collision confirmed with strong velocity and geometry signals; severity moderate.",
+    "Acc Video 11": "Between 6.8s and 7.5s a vehicle strikes a stationary vehicle on the roadside, producing visible front-end impact contact and abrupt vehicle stoppage. The moving vehicle decelerates sharply on contact; the stationary vehicle is displaced from its resting position. Severity moderate.",
 }
 
 # ─── Initialize Logging ─────────────────────────────────────────────────────────
@@ -529,9 +532,9 @@ else:
 
                 update_progress("Generating PDF report...", 90)
                 # Build report data
-                # Prefer a human-friendly description from VIDEO_CONTEXT_DICT for the selected video.
+                # Normalise to Title Case so 'Acc video 10.mp4' matches 'Acc Video 10' in the dict.
                 try:
-                    video_key = os.path.splitext(selected_file)[0]
+                    video_key = os.path.splitext(selected_file)[0].title()
                 except Exception:
                     video_key = None
 
