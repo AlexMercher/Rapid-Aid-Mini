@@ -15,3 +15,10 @@ streamlit>=1.30.0         # Web application framework
 
 # Testing
 pytest>=7.0.0             # Test framework
+
+# Phase 7 — Florence-2 semantic narration (replaces bakllava)
+# Weights: HuggingFace cache only — NOT in project directory
+transformers>=4.38.0,<5.0  # Pin <5.0: Florence-2 remote code incompatible with 5.x
+timm>=0.9.0                # Required by Florence-2 vision encoder
+einops>=0.7.0              # Required by Florence-2 model code
+accelerate>=0.26.0         # Required for device_map='auto' in from_pretrained

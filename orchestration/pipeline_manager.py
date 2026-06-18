@@ -50,6 +50,31 @@ class PipelineManager:
         # RapidAid processor (lazy-loaded)
         self._rapidaid = None
 
+        # Phase 7: semantic narration client (Florence-2 or bakllava)
+        self.semantic_client = None           # FlorenceClient instance, or None for bakllava
+        self._semantic_client_name = "bakllava"
+        if use_bakllava:
+            self._init_semantic_client()
+
+    def _init_semantic_client(self) -> None:
+        """Select and initialise the semantic narration client (called once at __init__)."""
+        client_setting = getattr(settings, "SEMANTIC_CLIENT", "bakllava")
+        if client_setting == "florence":
+            try:
+                from src.florence_client import FlorenceClient
+                self.semantic_client = FlorenceClient()
+                if not self.semantic_client.is_available:
+                    raise RuntimeError("Florence-2 model failed to load")
+                self._semantic_client_name = "Florence-2-large"
+                print("  Semantic client: Florence-2-large")
+            except Exception as exc:
+                print(f"  [WARN] Florence-2 unavailable ({exc}), falling back to bakllava")
+                self.semantic_client = None
+                self._semantic_client_name = "bakllava (fallback)"
+        else:
+            self._semantic_client_name = "bakllava (configured)"
+            print(f"  Semantic client: bakllava (configured)")
+
     def _get_rapidaid(self):
         """Lazy-load RapidAid processor."""
         if self._rapidaid is None:
@@ -198,32 +223,51 @@ class PipelineManager:
         self.timeline_builder.save_timeline(timeline, tl_path)
         result["timeline"] = timeline
 
-        # === STAGE 5: bakllava Narration ===
+        # === STAGE 5: Semantic Narration (Florence-2 or bakllava) ===
         bakllava_output = None
         if self.use_bakllava and storyboard_result is not None:
-            print("\n[STAGE 5] Running bakllava semantic narration...")
+            print(f"\n[STAGE 5] Running semantic narration ({self._semantic_client_name})...")
             t0 = time.perf_counter()
             try:
-                from src.bakllava_client import (
-                    narrate_storyboard, check_bakllava_available
-                )
-                if check_bakllava_available():
-                    # Send the storyboard_result dict (new per-frame approach)
-                    bakllava_output = narrate_storyboard(storyboard_result)
-                    # Save narration
+                if self.semantic_client is not None:
+                    # ── Florence-2 path ────────────────────────────────────────
+                    frames = storyboard_result.get("individual_frames", [])
+                    roles  = storyboard_result.get("roles", [])
+                    narrations = self.semantic_client.narrate_event(frames, roles)
+                    parts = [
+                        f"### {role}\n{narrations.get(role, '[no narration]')}"
+                        for role in roles
+                    ]
+                    bakllava_output = "\n\n".join(parts)
+                    florence_path = os.path.join(event_dir, "florence_output.md")
+                    with open(florence_path, "w", encoding="utf-8") as f:
+                        f.write(f"# Florence-2 Narration\n\n{bakllava_output}")
+                    # Also write bakllava_output.md for backward-compat (app.py, reports)
                     bk_path = os.path.join(event_dir, "bakllava_output.md")
                     with open(bk_path, "w", encoding="utf-8") as f:
-                        f.write(f"# bakllava Narration\n\n{bakllava_output}")
-                    print(f"  bakllava: {len(bakllava_output)} chars "
+                        f.write(f"# Florence-2 Narration (via florence_client)\n\n{bakllava_output}")
+                    print(f"  Florence: {len(bakllava_output)} chars "
                           f"({time.perf_counter() - t0:.1f}s)")
                 else:
-                    print("  [SKIP] bakllava not available")
-            except Exception as e:
-                print(f"  [ERROR] bakllava failed: {e}")
+                    # ── bakllava path (primary or auto-fallback) ───────────────
+                    from src.bakllava_client import (
+                        narrate_storyboard, check_bakllava_available
+                    )
+                    if check_bakllava_available():
+                        bakllava_output = narrate_storyboard(storyboard_result)
+                        bk_path = os.path.join(event_dir, "bakllava_output.md")
+                        with open(bk_path, "w", encoding="utf-8") as f:
+                            f.write(f"# bakllava Narration\n\n{bakllava_output}")
+                        print(f"  bakllava: {len(bakllava_output)} chars "
+                              f"({time.perf_counter() - t0:.1f}s)")
+                    else:
+                        print("  [SKIP] bakllava not available")
+            except Exception as exc:
+                print(f"  [ERROR] Semantic narration failed: {exc}")
                 import traceback
                 traceback.print_exc()
         else:
-            print("\n[STAGE 5] bakllava skipped")
+            print("\n[STAGE 5] Semantic narration skipped")
         result["bakllava_narration"] = bakllava_output
 
         # === STAGE 6: Metadata Packaging ===

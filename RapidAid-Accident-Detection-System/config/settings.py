@@ -322,6 +322,17 @@ FONT_SCALE_SMALL = 0.5
 FONT_THICKNESS = 2
 
 # ============================================================
+# SEMANTIC NARRATION CLIENT SELECTION (Phase 7)
+# ============================================================
+# "florence" = Florence-2-large (primary, 0.77B, MIT, HuggingFace)
+# "bakllava" = bakllava via Ollama (fallback, requires Ollama daemon)
+SEMANTIC_CLIENT         = "florence"
+FLORENCE_MODEL_ID       = str(os.path.join(WEIGHTS_DIR, "florence2"))  # local weights, no HuggingFace download
+FLORENCE_MAX_NEW_TOKENS = 200
+FLORENCE_NUM_BEAMS      = 3    # beam search on GPU (RTX 3050 float16)
+# Weights: weights/florence2/ — model.safetensors + config files (not tracked by git)
+
+# ============================================================
 # ENSURE DIRECTORIES EXIST
 # ============================================================
 for _dir in [WEIGHTS_DIR, OUTPUTS_DIR, ANNOTATED_DIR, REPORTS_DIR, DATA_DIR]:
