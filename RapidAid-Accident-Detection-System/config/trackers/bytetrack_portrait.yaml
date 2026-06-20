@@ -1,0 +1,49 @@
+# RapidAid — Portrait ByteTrack Configuration (Phase 8)
+#
+# Applied to portrait frames (h > w) such as V8 (360x640).
+# DO NOT rotate frames — these params compensate for portrait tracking geometry
+# WITHOUT any frame rotation or coordinate flip.
+#
+# Mapping to TrackManager constructor params:
+#   match_thresh      -> iou_threshold_high   (primary stage IoU gate)
+#   track_low_thresh  -> iou_threshold_low    (secondary stage IoU gate)
+#   track_buffer      -> max_lost_frames      (frames before track expires)
+#
+# Portrait geometry rationale:
+#   In portrait (h > w), vehicles are elongated vertically and approach the
+#   camera along the y-axis. Between analyzed frames (stride = 7 raw frames
+#   at 24fps = ~0.29s), fast-approaching vehicles can move 100-200px
+#   vertically. This reduces the frame-to-frame IoU vs. landscape defaults.
+#   Lower match_thresh prevents spurious track losses that flood the
+#   disappearance_analyzer with false ANOMALOUS signals.
+#
+# Velocity analyzer calibration (Phase 8 co-change):
+#   See PORTRAIT_VEL_HIGH_SPEED_THRESH and PORTRAIT_VEL_DIR_THRESH
+#   in settings.py. Portrait approach velocities (100+ px/frame normal)
+#   require a higher high_speed_threshold to suppress false velocity_collapse.
+#
+# Baseline (bytetrack.yaml)        Portrait adjustment
+# ----------------------------      -------------------
+# tracker_type: bytetrack           (unchanged)
+# track_high_thresh: 0.25           (unchanged — hardcoded conf split in TrackManager)
+# track_low_thresh:  0.15    →      0.08   (more permissive second-pass recovery)
+# new_track_thresh:  0.25           (unchanged — all unmatched high-conf dets create tracks)
+# track_buffer:      15      →      20     (longer survival; portrait re-detection is slower)
+# match_thresh:      0.25    →      0.15   (lower IoU gate for portrait geometry)
+# fuse_score:        True           (unchanged)
+
+tracker_type: bytetrack
+
+# Detection confidence thresholds (hardcoded in TrackManager, listed for reference)
+track_high_thresh: 0.25       # (float) conf >= this → high-conf det (Stage 1)
+track_low_thresh: 0.08        # (float) conf < 0.25 → low-conf det (Stage 2) | PORTRAIT: 0.08 (was 0.15)
+new_track_thresh: 0.25        # (float) min conf to spawn a new track
+
+# Track survival
+track_buffer: 20              # (int)   max analyzed frames before expiry | PORTRAIT: 20 (was 15)
+
+# Association threshold
+match_thresh: 0.15            # (float) IoU gate for primary matching | PORTRAIT: 0.15 (was 0.25)
+
+# Score fusion
+fuse_score: True              # (bool)  fuse detection conf into cost matrix (reference only)

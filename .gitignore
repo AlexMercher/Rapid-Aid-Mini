@@ -16,5 +16,6 @@ tmp/
 # Do not ignore requirements.txt
 !requirements.txt
 
-# Only allow Python files
+# Only allow Python and YAML config files
 !*.py
+!*.yaml

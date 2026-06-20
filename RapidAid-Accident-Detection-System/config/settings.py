@@ -350,7 +350,7 @@ BYTETRACK_DEFAULT_CONFIG         = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "weights", "bytetrack.yaml"
 )
 BYTETRACK_PORTRAIT_CONFIG        = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "weights", "bytetrack_portrait.yaml"
+    os.path.dirname(os.path.abspath(__file__)), "trackers", "bytetrack_portrait.yaml"
 )
 
 # Portrait TrackManager constructor params (map from bytetrack_portrait.yaml)
