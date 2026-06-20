@@ -316,6 +316,48 @@ def is_portrait_frame(frame_w: int, frame_h: int) -> bool:
     return frame_h > frame_w
 
 
+def _get_tracker_config(frame_w: int, frame_h: int) -> dict:
+    """
+    Phase 8 — Return TrackManager constructor params based on frame orientation.
+
+    Portrait (h > w) frames require:
+      - Lower IoU matching thresholds (vehicles move fast along y-axis)
+      - Longer track_buffer (re-detection slower in portrait orientation)
+      - Higher VelocityAnalyzer thresholds (approach velocities 100-200 px/frame
+        normal in portrait — don't confuse with crash deceleration)
+
+    Returns:
+        dict with keys:
+          iou_threshold_high, iou_threshold_low, max_lost_frames,
+          vel_high_speed_thresh, vel_dir_thresh, portrait_mode
+    """
+    if (is_portrait_frame(frame_w, frame_h)
+            and settings.PORTRAIT_TRACKER_ENABLED):
+        cfg_path = settings.BYTETRACK_PORTRAIT_CONFIG
+        print(f"[TRACKER] Portrait mode ({frame_w}x{frame_h}) — "
+              f"loading {cfg_path}")
+        return {
+            "iou_threshold_high":  settings.PORTRAIT_TRACK_IOU_HIGH,
+            "iou_threshold_low":   settings.PORTRAIT_TRACK_IOU_LOW,
+            "max_lost_frames":     settings.PORTRAIT_TRACK_MAX_LOST_FRAMES,
+            "vel_high_speed_thresh": settings.PORTRAIT_VEL_HIGH_SPEED_THRESH,
+            "vel_dir_thresh":        settings.PORTRAIT_VEL_DIR_THRESH,
+            "portrait_mode":         True,
+        }
+
+    cfg_path = settings.BYTETRACK_DEFAULT_CONFIG
+    print(f"[TRACKER] Landscape mode ({frame_w}x{frame_h}) — "
+          f"loading {cfg_path}")
+    return {
+        "iou_threshold_high":  0.25,
+        "iou_threshold_low":   0.15,
+        "max_lost_frames":     15,
+        "vel_high_speed_thresh": 8.0,
+        "vel_dir_thresh":        90.0,
+        "portrait_mode":         False,
+    }
+
+
 def portrait_swap_bboxes(bboxes: list, frame_w: int, frame_h: int) -> tuple:
     """
     Swap x/y axis in bboxes for portrait geometry computation.
@@ -465,8 +507,29 @@ class TrackCentricProcessor:
         frame_interval = max(1, int(fps / settings.FRAMES_PER_SECOND_TO_ANALYZE))
         print(f"[TrackProcessor] Sampling every {frame_interval} frames")
 
+        # Phase 8: select tracker and velocity analyzer config by orientation
+        _tracker_cfg = _get_tracker_config(frame_w, frame_h)
+        _portrait_mode = _tracker_cfg["portrait_mode"]
+        # Re-init vehicle tracker with orientation-specific IoU thresholds
+        self.vehicle_tracker = TrackManager(
+            max_lost_frames=_tracker_cfg["max_lost_frames"],
+            iou_threshold_high=_tracker_cfg["iou_threshold_high"],
+            iou_threshold_low=_tracker_cfg["iou_threshold_low"],
+        )
+        # Re-init velocity analyzer with orientation-specific speed thresholds
+        self.velocity_analyzer = VelocityAnalyzer(
+            high_speed_threshold=_tracker_cfg["vel_high_speed_thresh"],
+            direction_change_threshold=_tracker_cfg["vel_dir_thresh"],
+        )
+        print(
+            f"[TRACKER] iou_high={_tracker_cfg['iou_threshold_high']} "
+            f"iou_low={_tracker_cfg['iou_threshold_low']} "
+            f"max_lost={_tracker_cfg['max_lost_frames']} "
+            f"vel_speed_thresh={_tracker_cfg['vel_high_speed_thresh']} "
+            f"vel_dir_thresh={_tracker_cfg['vel_dir_thresh']}"
+        )
+
         # Reset all modules
-        self.vehicle_tracker.reset()
         self.person_tracker.reset()
         self.flow_analyzer.reset()
         self.disappearance_analyzer.update_frame_size(frame_w, frame_h)
@@ -595,6 +658,16 @@ class TrackCentricProcessor:
             velocity_score = self._compute_velocity_score(
                 vehicle_velocity_scores
             )
+            # Phase 8: Portrait velocity warmup
+            # In portrait videos, vehicles approach along y-axis at 100-200 px/frame
+            # (normal traffic). YOLO bbox instability in portrait orientation causes
+            # spurious direction reversals → trajectory_anomaly_score fires in early
+            # frames before baseline is established.
+            # Ramp: analyzed_count / WARMUP_FRAMES (0→1 linearly over warmup window).
+            if _portrait_mode and analyzed_count <= settings.PORTRAIT_VEL_WARMUP_FRAMES:
+                _vel_ramp = analyzed_count / settings.PORTRAIT_VEL_WARMUP_FRAMES
+                velocity_score = velocity_score * _vel_ramp
+
             raw_flow_score = max(
                 flow_result.get("motion_burst_score", 0),
                 flow_result.get("optical_flow_score", 0),
@@ -638,11 +711,30 @@ class TrackCentricProcessor:
                         _violation = max(0.5, _violation)
                         disappearance_score = raw_disappearance_score * _violation
 
-            # Feature 2: Geometry warmup — suppress geometry in early frames
+            # Phase 8: Portrait disappearance warmup (quadratic ramp)
+            # In portrait videos, fast-approaching vehicles (200+ px/frame) have IoU=0
+            # between consecutive frame positions, causing persistent lost-track ANOMALOUS
+            # scores (0.40 mid-frame + 0.25 vel_collapse + 0.10 erratic = 0.75 each).
+            # Quadratic ramp (frame/N)²: stays near 0 until ~60% of window (t≈7s),
+            # then rises rapidly in the last 40% so real crash signals fire normally.
+            if _portrait_mode and analyzed_count <= settings.PORTRAIT_DIS_WARMUP_FRAMES:
+                _dis_ramp = (analyzed_count / settings.PORTRAIT_DIS_WARMUP_FRAMES) ** 2
+                raw_disappearance_score = raw_disappearance_score * _dis_ramp
+                disappearance_score     = disappearance_score     * _dis_ramp
+
+            # Feature 2 / Phase 8: Geometry warmup
             raw_geometry = self._compute_geometry_score(
                 active_vehicle_tracks, collision_zones, frame_w, frame_h
             )
-            if analyzed_count <= 5:
+            if _portrait_mode and analyzed_count <= settings.PORTRAIT_GEO_WARMUP_FRAMES:
+                # Phase 8: Portrait geometry warmup (quadratic ramp)
+                # Portrait vehicles approaching camera head-on create spurious
+                # geo=0.79-0.80 overlaps in the pre-crash zone (t=3-8s).
+                # Quadratic ramp: near 0 until ~60% of window, then rises rapidly.
+                _geo_ramp = (analyzed_count / settings.PORTRAIT_GEO_WARMUP_FRAMES) ** 2
+                geometry_score = raw_geometry * _geo_ramp
+            elif analyzed_count <= 5:
+                # Feature 2: Landscape geometry warmup (linear, first 5 analyzed frames)
                 geo_warmup = 0.2 + 0.16 * analyzed_count  # 0.36..1.0
                 geometry_score = raw_geometry * min(1.0, geo_warmup)
             else:

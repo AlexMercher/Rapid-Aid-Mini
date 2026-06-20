@@ -333,6 +333,59 @@ FLORENCE_NUM_BEAMS      = 3    # beam search on GPU (RTX 3050 float16)
 # Weights: weights/florence2/ — model.safetensors + config files (not tracked by git)
 
 # ============================================================
+# PORTRAIT TRACKER CALIBRATION (Phase 8)
+# ============================================================
+# Portrait frames (h > w, e.g. V8 360×640) have different tracking dynamics:
+#   - Vehicles move along the y-axis (toward camera) at 100-200 px/analyzed_frame
+#   - YOLO bbox instability in portrait causes direction reversals in velocity
+#   - IoU drops faster in portrait than landscape between analyzed frames
+# Fix: lower IoU thresholds + recalibrate velocity analyzer for portrait.
+# Does NOT rotate frames (DO NOT rotate — see portrait_swap_bboxes for geometry fix).
+
+# Master enable switch (set False to test regression to landscape defaults)
+PORTRAIT_TRACKER_ENABLED         = True
+
+# YAML config paths (for documentation; TrackManager reads from settings below)
+BYTETRACK_DEFAULT_CONFIG         = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "weights", "bytetrack.yaml"
+)
+BYTETRACK_PORTRAIT_CONFIG        = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "weights", "bytetrack_portrait.yaml"
+)
+
+# Portrait TrackManager constructor params (map from bytetrack_portrait.yaml)
+#   match_thresh     → iou_threshold_high: lower IoU gate → fewer tracking misses
+#   track_low_thresh → iou_threshold_low:  more permissive second-pass recovery
+#   track_buffer     → max_lost_frames:    longer survival before track expires
+PORTRAIT_TRACK_IOU_HIGH          = 0.15   # was 0.25  — portrait match threshold
+PORTRAIT_TRACK_IOU_LOW           = 0.08   # was 0.15  — portrait second-pass
+PORTRAIT_TRACK_MAX_LOST_FRAMES   = 20     # was 15    — analyzed frames before expiry
+
+# Portrait VelocityAnalyzer recalibration
+# Default VelocityAnalyzer is calibrated for landscape:
+#   high_speed_threshold  = 8.0  px/analyzed_frame
+#   direction_change_threshold = 90.0  degrees
+# In portrait, vehicles approach at 50-200 px/analyzed_frame (normal traffic).
+# Raising these thresholds prevents YOLO bbox fluctuations from triggering
+# trajectory_anomaly_score=1.0 in the first analyzed frames.
+PORTRAIT_VEL_HIGH_SPEED_THRESH   = 30.0   # was 8.0   — px/analyzed_frame for portrait
+PORTRAIT_VEL_DIR_THRESH          = 150.0  # was 90.0  — degrees; only near-perfect reversals
+# Warmup window: linearly ramp portrait velocity_score from 0→1 over this many analyzed frames.
+# Prevents early confirmed from approach-velocity noise before baseline stabilises.
+PORTRAIT_VEL_WARMUP_FRAMES       = 35     # analyzed frames (≈11.7s at 3fps analyzed)
+# Phase 8: Portrait disappearance warmup
+# In portrait videos, fast-approaching vehicles (200+ px/frame) have IoU=0
+# between consecutive frame positions, causing persistent lost-track ANOMALOUS
+# scores even in normal traffic.
+# Quadratic ramp (frame/N)²: stays near 0 until ~60% of window, rises rapidly
+# in the last 40% (real crash zone). Prevents false CONFIRMED in t=3-8s range.
+PORTRAIT_DIS_WARMUP_FRAMES       = 35     # analyzed frames (≈11.7s at 3fps analyzed)
+# Portrait geometry warmup: portrait vehicles approaching the camera create
+# spurious geo=0.79-0.80 overlaps in the pre-crash zone (t=3-8s).
+# Quadratic ramp delays spatial confirmation until the real crash geometry fires.
+PORTRAIT_GEO_WARMUP_FRAMES       = 35     # analyzed frames (≈11.7s at 3fps analyzed)
+
+# ============================================================
 # ENSURE DIRECTORIES EXIST
 # ============================================================
 for _dir in [WEIGHTS_DIR, OUTPUTS_DIR, ANNOTATED_DIR, REPORTS_DIR, DATA_DIR]:

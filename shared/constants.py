@@ -52,6 +52,8 @@ SEMANTIC_FRAME_HEIGHT = 432
 #     "Acc Video 7":  (2.5,  4.0),
 #     "Acc Video 8":  (10.0, 12.0),
 #     "Acc Video 9":  (3.5,  4.5),
+#     "Acc Video 10": (4.4,  4.9),   # Moderate -- side-impact intersection (added 2026-06-15)
+#     "Acc Video 11": (6.8,  7.5),   # Moderate -- vehicle vs stationary   (added 2026-06-15)
 # }
 # Unsupervised replacement: first_confirmed_time from Phase 4 multi-event detection
 
